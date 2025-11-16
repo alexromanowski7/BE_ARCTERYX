@@ -134,23 +134,26 @@ def guess_attributes(soup: BeautifulSoup):
 
 def classify_product(url: str):
     """
-    Na podstawie URL: Men/Women oraz Clothing/Footwear/Accessories.
+    Kategoria główna: Clothing / Footwear / Accessories
+    Podkategoria: Men / Women (albo Other).
     """
     path = urlparse(url).path.lower()
 
+    # podkategoria = płeć
     if "/mens/" in path:
-        category = "Men"
+        subcategory = "Men"
     elif "/womens/" in path:
-        category = "Women"
+        subcategory = "Women"
     else:
-        category = "Other"
+        subcategory = "Other"
 
+    # kategoria = typ produktu
     if "shoe" in path or "boot" in path or "footwear" in path:
-        subcategory = "Footwear"
+        category = "Footwear"
     elif "hat" in path or "belt" in path or "glove" in path or "accessor" in path:
-        subcategory = "Accessories"
+        category = "Accessories"
     else:
-        subcategory = "Clothing"
+        category = "Clothing"
 
     return category, subcategory
 
@@ -240,7 +243,7 @@ def main():
 
     for url in product_urls:
         category, subcategory = classify_product(url)
-        if category not in ("Men", "Women"):
+        if subcategory not in ("Men", "Women"):
             continue
 
         print(f"Scrapuję: {category} / {subcategory} -> {url}")
