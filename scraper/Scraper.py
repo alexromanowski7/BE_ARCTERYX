@@ -2,6 +2,7 @@
 import os
 import json
 import time
+import csv
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -140,12 +141,11 @@ def classify_product(url: str):
     path = urlparse(url).path.lower()
 
     # podkategoria = płeć
-    if "/mens/" in path:
-        subcategory = "Men"
-    elif "/womens/" in path:
+    if "/womens/" in path:
         subcategory = "Women"
     else:
-        subcategory = "Other"
+        subcategory = "Men"
+
 
     # kategoria = typ produktu
     if "shoe" in path or "boot" in path or "footwear" in path:
@@ -256,11 +256,57 @@ def main():
         except Exception as e:
             print(f"  [!] Błąd przy {url}: {e}")
 
-    out_path = os.path.join("scraper_output", "data.json")
-    with open(out_path, "w", encoding="utf-8") as f:
+    # JSON
+    json_path = os.path.join("scraper_output", "data.json")
+    with open(json_path, "w", encoding="utf-8") as f:
         json.dump(all_products, f, ensure_ascii=False, indent=2)
+    print(f"Zapisano {len(all_products)} produktów do {json_path}")
 
-    print(f"Zapisano {len(all_products)} produktów do {out_path}")
+    # CSV
+    csv_path = os.path.join("scraper_output", "data.csv")
+    fieldnames = [
+        "name",
+        "description",
+        "price",
+        "categories",   # category > subcategory
+        "quantity",
+        "image1",
+        "image2",
+        "source_url",
+        "color",
+        "material",
+    ]
+
+    with open(csv_path, "w", encoding="utf-8", newline="") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames, delimiter=";")
+        writer.writeheader()
+
+        for p in all_products:
+            images = p.get("images", [])
+            img1 = images[0] if len(images) > 0 else ""
+            img2 = images[1] if len(images) > 1 else ""
+
+            attrs = p.get("attributes", {}) or {}
+            color = attrs.get("color", "")
+            material = attrs.get("material", "")
+
+            quantity = 5  # domyślna ilość – możesz potem nadpisać w CSV
+
+            row = {
+                "name": p["name"],
+                "description": p["description"],
+                "price": p["price"],
+                "categories": f"{p['category']}>{p['subcategory']}",
+                "quantity": quantity,
+                "image1": img1,
+                "image2": img2,
+                "source_url": p["source_url"],
+                "color": color,
+                "material": material,
+            }
+            writer.writerow(row)
+
+    print(f"Zapisano {len(all_products)} produktów do {csv_path}")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,3 @@
-# scraper/config.py
 
 HEADERS = {
     "User-Agent": (
@@ -8,8 +7,6 @@ HEADERS = {
     )
 }
 
-# Główny indeks sitemap z robots.txt
 SITEMAP_INDEX_URL = "https://arcteryx.com/sitemap.xml"
 
-# Szukamy tylko URL-i produktów ze sklepu US/EN
 VALID_ROOT = "/us/en/shop/"
