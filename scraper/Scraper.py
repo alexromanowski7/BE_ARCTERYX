@@ -1,4 +1,3 @@
-# scraper/Scraper.py
 import os
 import json
 import csv
@@ -55,6 +54,10 @@ def collect_product_urls():
 def extract_image_urls(soup: BeautifulSoup, base_url: str):
     urls = []
     
+    meta_img = soup.find("meta", property="og:image")
+    if meta_img and meta_img.get("content"):
+        urls.append(urljoin(base_url, meta_img["content"]))
+
     scripts = soup.find_all('script', type='application/ld+json')
     for script in scripts:
         try:
@@ -64,25 +67,46 @@ def extract_image_urls(soup: BeautifulSoup, base_url: str):
             for item in data:
                 if item.get('@type') == 'Product' and 'image' in item:
                     img_data = item['image']
-                    if isinstance(img_data, list): urls.extend(img_data)
-                    elif isinstance(img_data, str): urls.append(img_data)
+                    if isinstance(img_data, list): 
+                        urls.extend(img_data)
+                    elif isinstance(img_data, str): 
+                        urls.append(img_data)
         except: continue
         
-
+    # 3. Skanuj tagi <img> szukając srcset (dla wysokiej rozdzielczości)
     for img in soup.select("img"):
-        src = img.get("src") or img.get("data-src")
+        src = None
+        
+        srcset = img.get("srcset") or img.get("data-srcset")
+        if srcset:
+            try:
+                candidates = srcset.split(",")
+                best_candidate = candidates[-1].strip().split(" ")[0]
+                if best_candidate:
+                    src = best_candidate
+            except:
+                pass
+        
+        if not src:
+            src = img.get("src") or img.get("data-src")
+            
         if not src: continue
-        if any(x in src.lower() for x in ["icon", "logo", "svg", "avatar"]): continue
+        
+        src_lower = src.lower()
+        if "base64" in src_lower: continue
+        if any(x in src_lower for x in ["icon", "logo", "svg", "avatar", "thumb", "swatch"]): continue
+        
         full_url = urljoin(base_url, src)
         urls.append(full_url)
 
     seen = set()
     clean_urls = []
+    
     for x in urls:
         if x not in seen:
             clean_urls.append(x)
             seen.add(x)
-            
+    
     return clean_urls[:2]
 
 def guess_text(soup: BeautifulSoup, selectors):
@@ -156,6 +180,61 @@ def classify_product(url: str):
 
     return category, subcategory
 
+def extract_description(soup: BeautifulSoup):
+    description = ""
+
+    scripts = soup.find_all('script', type='application/ld+json')
+    for script in scripts:
+        try:
+            if not script.string: continue
+            data = json.loads(script.string)
+            if isinstance(data, dict): data = [data]
+            for item in data:
+                if item.get('@type') == 'Product' and 'description' in item:
+                    description = item['description']
+                    if description:
+                        return BeautifulSoup(description, "html.parser").get_text(" ", strip=True)
+        except: continue
+
+    meta_desc = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "description"})
+    if meta_desc and meta_desc.get("content"):
+        return meta_desc["content"].strip()
+
+
+    possible_selectors = [
+        "div[itemprop='description']",
+        ".product-description",
+        "#product-description",
+        "div[class*='description'] p",
+        "section[class*='Description']"
+    ]
+    
+    for selector in possible_selectors:
+        el = soup.select_one(selector)
+        if el and len(el.get_text(strip=True)) > 20: # Ignoruj bardzo krótkie teksty
+            return el.get_text(" ", strip=True)
+
+    return "Brak opisu"
+
+
+def parse_product_page(url: str, category: str, subcategory: str):
+    html = fetch_html(url)
+    if not html: raise Exception("Pusta odpowiedź HTML")
+    soup = BeautifulSoup(html, "html.parser")
+    
+    clean_description = extract_description(soup)
+
+    return {
+        "category": category,
+        "subcategory": subcategory,
+        "name": guess_text(soup, ["h1[class*='Product']", "h1[data-testid*='product']", "h1"]), # Dodano fallback do samego h1
+        "description": clean_description,
+        "price": guess_price(soup),
+        "attributes": guess_attributes(soup),
+        "images": extract_image_urls(soup, url),
+        "source_url": url,
+    }
+
 def parse_product_page(url: str, category: str, subcategory: str):
     html = fetch_html(url)
     if not html: raise Exception("Pusta odpowiedź HTML")
@@ -174,7 +253,11 @@ def parse_product_page(url: str, category: str, subcategory: str):
 
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    output_dir = os.path.join(script_dir, "scraper_output")
+    
+    project_root = os.path.dirname(script_dir)
+    
+    output_dir = os.path.join(project_root, "scraper_output")
+    
     os.makedirs(output_dir, exist_ok=True)
     print(f"[INFO] Wyniki zostaną zapisane w: {output_dir}")
 
