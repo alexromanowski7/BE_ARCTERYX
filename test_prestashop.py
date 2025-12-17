@@ -11,177 +11,149 @@ from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.support.ui import Select
 
-# --- KONFIGURACJA ---
-BASE_URL = os.getenv("SHOP_URL", "https://localhost:8443/")
+BASE_URL = os.getenv("SHOP_URL", "https://localhost/")
 CART_URL = BASE_URL.rstrip("/") + "/koszyk?action=show"
-LOGIN_URL = BASE_URL.rstrip("/") + "/logowanie?create_account=1"
+LOGIN_URL = BASE_URL.rstrip("/") + "/logowanie" 
 HISTORY_URL = BASE_URL.rstrip("/") + "/historia-zamowien"
 
-# TWOJE KATEGORIE
-CATEGORIES = ["16-men", "19-women", "21-men", "22-women", "31-men", "32-women"]
-TARGET_PRODUCTS = 10  # Cel: 10 produktów w koszyku
+ADMIN_URL = "https://localhost/admin697jmd6ap" 
+ADMIN_EMAIL = "admin@sklep.pl" 
+ADMIN_PASS = "password123"
+
+CATEGORIES = ["14-men", "17-women", "16-men", "18-women", "11-men", "12-women"]
+SEARCH_QUERY = "Hummingbird"
+TARGET_PRODUCTS = 10 
 
 def wait_visible(driver, locator, timeout=10):
     return WebDriverWait(driver, timeout).until(EC.visibility_of_element_located(locator))
 
 def click_js(driver, element):
-    """Bezpieczne kliknięcie JavaScriptem"""
+    """Bezpieczne kliknięcie JavaScriptem (ignoruje elementy zasłaniające)"""
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
     time.sleep(0.5)
     driver.execute_script("arguments[0].click();", element)
 
+def search_and_add_product(driver, query):
+    print(f"🔍 Wyszukiwanie: '{query}'")
+    try:
+        search_box = driver.find_element(By.NAME, "s")
+        search_box.clear()
+        search_box.send_keys(query)
+        search_box.send_keys(Keys.ENTER)
+        wait_visible(driver, (By.CSS_SELECTOR, "#products"), timeout=5)
+        
+        links = [a.get_attribute("href") for a in driver.find_elements(By.CSS_SELECTOR, ".products .product-title a")]
+        if links:
+            return add_product_to_cart_safe(driver, random.choice(links))
+    except: pass
+    return False
+
 def open_category_and_get_products(driver, category_slug):
-    full_url = BASE_URL.rstrip("/") + "/" + category_slug
-    # print(f"📂 Kategoria: {full_url}") # Ograniczam spam w konsoli
-    driver.get(full_url)
-    
+    driver.get(BASE_URL.rstrip("/") + "/" + category_slug)
     links = []
     try:
         wait_visible(driver, (By.CSS_SELECTOR, "#products, .products"), timeout=5)
-        elements = driver.find_elements(By.TAG_NAME, "a")
-        for a in elements:
+        for a in driver.find_elements(By.TAG_NAME, "a"):
             href = a.get_attribute("href")
-            if href and ".html" in href and "product" not in href:
-                if href not in links: links.append(href)
+            if href and ".html" in href and "product" not in href and href not in links:
+                links.append(href)
     except: pass
-    
-    random.shuffle(links) # Mieszamy, żeby nie brać zawsze tych samych
+    random.shuffle(links)
     return links
 
 def add_product_to_cart_safe(driver, product_url):
-    """
-    Zwraca True jeśli dodano, False jeśli się nie udało.
-    Bazuje na Twoim pierwotnym kodzie (try/except + zmiana qty na 1).
-    """
-    print(f"   -> Próba produktu: {product_url}")
+    print(f"   -> Produkt: {product_url}")
     driver.get(product_url)
     time.sleep(1)
-
-    # 1. Wybór wariantu (często odblokowuje przycisk)
     try:
-        variant_selects = driver.find_elements(By.CSS_SELECTOR, ".product-variants select")
-        for select_elem in variant_selects:
-            select = Select(select_elem)
-            try: select.select_by_index(0)
-            except: pass
-            time.sleep(1)
-    except: pass
-
-    # 2. Próba wpisania losowej ilości (1-4)
-    qty = random.randint(1, 4)
-    
-    try:
-        qty_input = driver.find_element(By.ID, "quantity_wanted")
-        click_js(driver, qty_input)
-        qty_input.clear()
-        qty_input.send_keys(Keys.BACK_SPACE * 3)
-        qty_input.send_keys(str(qty))
-        qty_input.send_keys(Keys.TAB) # Trigger walidacji
+        try: Select(driver.find_element(By.CSS_SELECTOR, ".product-variants select")).select_by_index(0)
+        except: pass
+        
+        qty = random.randint(1, 3)
+        q_input = driver.find_element(By.ID, "quantity_wanted")
+        click_js(driver, q_input)
+        q_input.clear()
+        q_input.send_keys(Keys.BACK_SPACE*3 + str(qty) + Keys.TAB)
         time.sleep(1)
 
-        # 3. Sprawdzenie czy sklep nie blokuje (brak towaru)
-        add_btn = driver.find_element(By.CSS_SELECTOR, "button[data-button-action='add-to-cart']")
-        availability_msg = ""
-        try:
-            availability_msg = driver.find_element(By.ID, "product-availability").text.lower()
-        except: pass
-
-        # Jeśli zablokowane lub komunikat o braku -> Zmieniamy na 1 sztukę
-        if not add_btn.is_enabled() or "nie ma wystarczającej" in availability_msg or "not enough" in availability_msg:
-            print("      ⚠️ Za dużo sztuk. Zmieniam na 1.")
-            qty_input.click()
-            qty_input.clear()
-            qty_input.send_keys("1")
-            qty_input.send_keys(Keys.TAB)
-            time.sleep(1)
-
-        # Ponowne sprawdzenie przycisku
-        if add_btn.is_enabled():
-            click_js(driver, add_btn)
-            
-            # Czekamy na modal
+        btn = driver.find_element(By.CSS_SELECTOR, "button[data-button-action='add-to-cart']")
+        if btn.is_enabled():
+            click_js(driver, btn)
             wait_visible(driver, (By.ID, "blockcart-modal"), timeout=5)
             print("      ✅ DODANO.")
-            
-            # Zamykamy modal (przycisk 'Kontynuuj zakupy' - btn-secondary)
-            try:
-                close_btns = driver.find_elements(By.CSS_SELECTOR, "#blockcart-modal .btn-secondary")
-                if close_btns:
-                    click_js(driver, close_btns[0])
-                else:
-                    # Fallback: kliknij w tło lub X
-                    driver.find_element(By.CSS_SELECTOR, ".close").click()
+            try: click_js(driver, driver.find_element(By.CSS_SELECTOR, "#blockcart-modal .btn-secondary"))
             except: pass
-            
             return True
-        else:
-            print("      ❌ Produkt niedostępny (przycisk nieaktywny).")
-            return False
-
-    except Exception as e:
-        print(f"      ❌ Błąd w procesie dodawania: {e}")
         return False
+    except: return False
 
 def remove_from_cart(driver, n=3):
     print(f"🗑️ Usuwanie {n} szt.")
     driver.get(CART_URL)
     time.sleep(2)
-    for i in range(n):
+    for _ in range(n):
         try:
-            btns = driver.find_elements(By.CSS_SELECTOR, "a.remove-from-cart")
-            if not btns: break
-            click_js(driver, btns[0])
+            click_js(driver, driver.find_element(By.CSS_SELECTOR, "a.remove-from-cart"))
             time.sleep(2)
-            print(f"   - Usunięto {i+1}")
         except: break
 
 def register_account(driver):
-    print(f"👤 Rejestracja...")
-    driver.get(LOGIN_URL)
-    email = f"klient{random.randint(10000,99999)}@test.pl"
+    print(f"👤 Rejestracja klienta...")
+    driver.get(BASE_URL.rstrip("/") + "/logowanie?create_account=1")
+    email = f"klient{random.randint(100000,999999)}@test.pl"
+    password = "Test1234!"
+    
     try:
         driver.find_element(By.NAME, "firstname").send_keys("Jan")
-        driver.find_element(By.NAME, "lastname").send_keys("Testowy")
+        driver.find_element(By.NAME, "lastname").send_keys("Automatyczny")
         driver.find_element(By.NAME, "email").send_keys(email)
-        driver.find_element(By.NAME, "password").send_keys("Test1234!")
+        driver.find_element(By.NAME, "password").send_keys(password)
+        for cb in driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']"): click_js(driver, cb)
         
-        cbs = driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
-        for cb in cbs: click_js(driver, cb)
-        
-        save = driver.find_element(By.CSS_SELECTOR, "button[data-link-action='save-customer']")
-        click_js(driver, save)
+        save_btn = driver.find_element(By.CSS_SELECTOR, "button[data-link-action='save-customer']")
+        click_js(driver, save_btn)
         time.sleep(2)
-        print(f"   ✅ Zarejestrowano: {email}")
+        print(f"   ✅ Konto utworzone: {email}")
+        return email, password
     except Exception as e:
         print(f"   ❌ Błąd rejestracji: {e}")
+        return None, None
+
+def login_customer_again(driver, email, password):
+    """Loguje klienta ponownie, bo Admin mógł zabić sesję"""
+    print(f"👤 Ponowne logowanie klienta ({email})...")
+    driver.get(LOGIN_URL)
+    time.sleep(1)
+    try:
+        driver.find_element(By.NAME, "email").send_keys(email)
+        driver.find_element(By.NAME, "password").send_keys(password)
+        click_js(driver, driver.find_element(By.ID, "submit-login"))
+        time.sleep(2)
+    except: pass
 
 def checkout_process(driver):
-    print("🚀 CHECKOUT START")
+    print("🚀 Checkout...")
     driver.get(CART_URL)
     time.sleep(2)
     try:
-        checkout_btn = driver.find_elements(By.CSS_SELECTOR, "a.btn.btn-primary, .cart-detailed-actions a")
-        if checkout_btn:
-            click_js(driver, checkout_btn[0])
-        else:
-            return "PUSTY KOSZYK"
+        btns = driver.find_elements(By.CSS_SELECTOR, "a.btn.btn-primary")
+        if btns: click_js(driver, btns[0])
+        else: return "PUSTY"
     except: pass
     time.sleep(2)
 
-    # ADRES
     try:
-        if driver.find_elements(By.NAME, "address1") and driver.find_element(By.NAME, "address1").is_displayed():
-            driver.find_element(By.NAME, "address1").send_keys("Ulica Testowa 1")
+        if len(driver.find_elements(By.NAME, "address1")) > 0:
+            driver.find_element(By.NAME, "address1").send_keys("Ulica 1")
             driver.find_element(By.NAME, "postcode").send_keys("00-001")
-            driver.find_element(By.NAME, "city").send_keys("Warszawa")
+            driver.find_element(By.NAME, "city").send_keys("Miasto")
             click_js(driver, driver.find_element(By.NAME, "confirm-addresses"))
         else:
-            confirm_btns = driver.find_elements(By.NAME, "confirm-addresses")
-            if confirm_btns: click_js(driver, confirm_btns[0])
+            conf = driver.find_elements(By.NAME, "confirm-addresses")
+            if conf: click_js(driver, conf[0])
     except: pass
     time.sleep(1)
 
-    # DOSTAWA
     try:
         opts = driver.find_elements(By.CSS_SELECTOR, ".delivery-option input")
         if opts: click_js(driver, opts[0])
@@ -189,27 +161,63 @@ def checkout_process(driver):
     except: pass
     time.sleep(1)
 
-    # PŁATNOŚĆ
     try:
-        cod_input = driver.find_elements(By.CSS_SELECTOR, "input[data-module-name*='cashondelivery'], input[data-module-name*='cod']")
-        if cod_input:
-            click_js(driver, cod_input[0])
-        else:
-            inputs = driver.find_elements(By.CSS_SELECTOR, ".payment-options input[type='radio']")
-            if inputs: click_js(driver, inputs[-1])
-
+        cod = driver.find_elements(By.CSS_SELECTOR, "input[data-module-name*='cashondelivery'], input[data-module-name*='cod']")
+        if cod: click_js(driver, cod[0])
+        else: click_js(driver, driver.find_elements(By.CSS_SELECTOR, ".payment-options input")[-1])
+        
         terms = driver.find_elements(By.ID, "conditions_to_approve[terms-and-conditions]")
         if terms: click_js(driver, terms[0])
-
+        
         click_js(driver, driver.find_element(By.CSS_SELECTOR, "#payment-confirmation button"))
         time.sleep(5)
+        return "SUKCES" if "confirmation" in driver.current_url or "potwierdzenie" in driver.current_url else "BŁĄD"
+    except: return "BŁĄD"
+
+def change_order_status_in_admin(driver):
+    print(f"\n🔧 PANEL ADMINA: Zmiana statusu...")
+    driver.get(ADMIN_URL)
+    time.sleep(2)
+
+    if len(driver.find_elements(By.ID, "email")) > 0:
+        driver.find_element(By.ID, "email").send_keys(ADMIN_EMAIL)
+        driver.find_element(By.ID, "passwd").send_keys(ADMIN_PASS)
+        click_js(driver, driver.find_element(By.NAME, "submitLogin"))
+        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "main")))
+
+    try:
+        if "token=" in driver.current_url:
+            import re
+            token = re.search(r'token=([a-zA-Z0-9]+)', driver.current_url).group(1)
+            driver.get(driver.current_url.split("?")[0] + f"?controller=AdminOrders&token={token}")
+    except: pass
+    time.sleep(2)
+
+    try:
+        wait_visible(driver, (By.TAG_NAME, "table"), 10)
+        print("   -> Klikam w status na liście...")
         
-        if "confirmation" in driver.current_url or "potwierdzenie" in driver.current_url:
-            return "SUKCES"
-        return "BŁĄD"
+        btn = driver.find_element(By.XPATH, "//tbody//tr[1]//button[contains(@class, 'dropdown-toggle')]")
+        click_js(driver, btn)
+        time.sleep(1)
+        
+        print("   -> Wybieram 'Dostarczone'...")
+        opt = driver.find_element(By.XPATH, "//div[contains(@class, 'dropdown-menu')]//*[contains(text(), 'Dostarczone')]")
+        click_js(driver, opt)
+        
+        print("   ✅ Status zmieniony.")
+        time.sleep(3)
+        
     except Exception as e:
-        print(f"   ❌ Błąd checkoutu: {e}")
-        return "BŁĄD"
+        print(f"   ⚠️ Błąd zmiany statusu na liście: {e}")
+        try:
+            click_js(driver, driver.find_element(By.CSS_SELECTOR, "table.order tbody tr:first-child td a.btn"))
+            time.sleep(3)
+            click_js(driver, driver.find_element(By.ID, "update_order_status_action_btn"))
+            click_js(driver, driver.find_element(By.XPATH, "//*[contains(text(), 'Dostarczone')]"))
+            try: click_js(driver, driver.find_element(By.CSS_SELECTOR, "button.add-order-state-btn"))
+            except: pass
+        except: pass
 
 def main():
     chrome_opts = ChromeOptions()
@@ -218,65 +226,62 @@ def main():
     
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_opts)
-    driver.implicitly_wait(3)
+    driver.implicitly_wait(5)
 
     try:
-        # --- 1. DODAWANIE PRODUKTÓW (Pętla aż 10) ---
         products_added_count = 0
-        
-        print(f"--- ROZPOCZYNAM DODAWANIE (CEL: {TARGET_PRODUCTS}) ---")
+        print(f"--- START TESTU ---")
 
-        # Pętla główna: kręci się tak długo, aż uzbiera 10 produktów
-        # Zabezpieczenie 'loop_limit' przed nieskończonością
-        loop_limit = 0 
+        if search_and_add_product(driver, SEARCH_QUERY): products_added_count += 1
         
-        while products_added_count < TARGET_PRODUCTS and loop_limit < 50:
-            loop_limit += 1
-            print(f"\n🔄 Przebieg pętli kategorii nr {loop_limit}...")
-            
+        loop = 0
+        while products_added_count < TARGET_PRODUCTS and loop < 50:
+            loop += 1
             for cat in CATEGORIES:
                 if products_added_count >= TARGET_PRODUCTS: break
-                
-                links = open_category_and_get_products(driver, cat)
-                
-                for link in links:
+                for link in open_category_and_get_products(driver, cat):
                     if products_added_count >= TARGET_PRODUCTS: break
-                    
-                    # Tu wywołujemy starą, dobrą logikę dodawania
-                    success = add_product_to_cart_safe(driver, link)
-                    
-                    if success:
-                        products_added_count += 1
-                        print(f"   🔢 Stan licznika: {products_added_count}/{TARGET_PRODUCTS}")
+                    if add_product_to_cart_safe(driver, link): products_added_count += 1
 
-        if products_added_count < TARGET_PRODUCTS:
-            print(f"⚠️ UWAGA: Nie udało się uzbierać {TARGET_PRODUCTS} produktów mimo {loop_limit} prób.")
-
-        # --- 2. USUWANIE ---
         remove_from_cart(driver, 3)
-
-        # --- 3. REJESTRACJA ---
-        register_account(driver)
-
-        # --- 4. CHECKOUT ---
+        
+        client_email, client_pass = register_account(driver)
+        
         status = checkout_process(driver)
-        print(f"=== WYNIK TESTU: {status} ===")
+        print(f"=== ZAMÓWIENIE: {status} ===")
 
-        # --- 5. FAKTURA ---
-        driver.get(HISTORY_URL)
-        try:
-             wait_visible(driver, (By.ID, "content"), timeout=5)
-             if driver.find_elements(By.CSS_SELECTOR, "a[href*='.pdf']"):
-                 print("✅ FAKTURA JEST DOSTĘPNA.")
-             else:
-                 print("ℹ️  Brak faktury (zależy od ustawień statusu w adminie).")
-        except: pass
+        if status == "SUKCES":
+            change_order_status_in_admin(driver)
+
+            if client_email and client_pass:
+                login_customer_again(driver, client_email, client_pass)
+            
+            print("\n📄 Pobieranie faktury...")
+            driver.get(HISTORY_URL)
+            time.sleep(2)
+            try:
+                 wait_visible(driver, (By.ID, "content"), timeout=5)
+                 
+                 print("   -> Szukam ikonki PDF...")
+                 
+                 invoice_link = driver.find_element(By.XPATH, "//table//a[contains(@href, 'pdf') or contains(@href, 'PDF')]")
+                 
+                 if invoice_link:
+                     print(f"   ✅ ZNALEZIONO! Klikam w ikonkę...")
+                     click_js(driver, invoice_link)
+                     time.sleep(5)
+                     print("   ⬇️  Pobrano fakturę.")
+                 else:
+                     print("   ℹ️  Nie widzę ikonki PDF. Sprawdź status 'Dostarczone'.")
+                     
+            except Exception as e:
+                print(f"   ❌ Nie udało się kliknąć w PDF: {e}")
+                driver.save_screenshot("error_invoice_click.png")
 
     except Exception as e:
         print(f"BŁĄD KRYTYCZNY: {e}")
     finally:
-        print("Koniec pracy. Zamykam za 5s.")
-        time.sleep(5)
+        print("Koniec pracy.")
         driver.quit()
 
 if __name__ == "__main__":
