@@ -1,0 +1,50 @@
+version: '3'
+
+services:
+  mariadb:
+    image: mariadb:10.3
+    container_name: prestashop_db
+    environment:
+      - MYSQL_ROOT_PASSWORD=admin
+      - MYSQL_DATABASE=prestashop
+      - MYSQL_USER=prestashop
+      - MYSQL_PASSWORD=prestashop
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      - shop-network
+
+  prestashop:
+    image: prestashop/prestashop:1.7.8
+    container_name: prestashop_app
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DB_SERVER=mariadb
+      - DB_USER=prestashop
+      - DB_PASSWD=prestashop
+      - DB_NAME=prestashop
+      - PS_LANGUAGE=pl
+      - PS_COUNTRY=PL
+      - PS_INSTALL_AUTO=1
+      - PS_DOMAIN=localhost
+      - PS_ENABLE_SSL=1
+      - ADMIN_MAIL=admin@sklep.pl
+      - ADMIN_PASSWD=password123
+    links:
+      - mariadb
+    depends_on:
+      - mariadb
+    volumes:
+      - shop_data:/var/www/html
+      - ./ssl:/etc/apache2/ssl
+    networks:
+      - shop-network
+
+volumes:
+  db_data:
+  shop_data:
+
+networks:
+  shop-network:
