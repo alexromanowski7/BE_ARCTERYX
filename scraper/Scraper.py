@@ -1,163 +1,189 @@
-# scraper/Scraper.py
 import os
 import json
-import time
 import csv
+import re
+import random
 from urllib.parse import urljoin, urlparse
-
 import requests
 from bs4 import BeautifulSoup
 
-from config import HEADERS, SITEMAP_INDEX_URL, VALID_ROOT
+try:
+    from config import HEADERS, SITEMAP_INDEX_URL, VALID_ROOT
+except ImportError:
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    from config import HEADERS, SITEMAP_INDEX_URL, VALID_ROOT
 
 SESSION = requests.Session()
 SESSION.headers.update(HEADERS)
 
-
 def fetch_html(url: str) -> str:
-    resp = SESSION.get(url, timeout=20)
-    resp.raise_for_status()
-    resp.encoding = "utf-8"
-    return resp.text
-
+    try:
+        resp = SESSION.get(url, timeout=20)
+        resp.raise_for_status()
+        resp.encoding = "utf-8"
+        return resp.text
+    except Exception as e:
+        print(f"[!] Błąd pobierania {url}: {e}")
+        return ""
 
 def discover_sitemaps():
-    """
-    Z głównego sitemap.xml wyciągnij listę pod-sitemap.
-    Obsługuje zarówno sitemapindex, jak i pojedynczy urlset.
-    """
     xml = fetch_html(SITEMAP_INDEX_URL)
-    soup = BeautifulSoup(xml, "xml")
-
+    if not xml: return [SITEMAP_INDEX_URL]
+    soup = BeautifulSoup(xml, "html.parser")
     sitemaps = set()
-
-    # Jeżeli to indeks (<sitemapindex>), bierzemy <sitemap><loc>...</loc></sitemap>
     for sm in soup.find_all("sitemap"):
         loc = sm.find("loc")
-        if not loc:
-            continue
-        url = loc.get_text(strip=True)
-        sitemaps.add(url)
-
-    # Jeżeli nie było <sitemap>, traktujemy ten plik jako zwykły urlset
-    if not sitemaps:
-        sitemaps.add(SITEMAP_INDEX_URL)
-
-    print(f"[DEBUG] znaleziono {len(sitemaps)} sitemap w indeksie")
+        if loc: sitemaps.add(loc.get_text(strip=True))
+    if not sitemaps: sitemaps.add(SITEMAP_INDEX_URL)
     return sorted(sitemaps)
 
-
 def collect_product_urls():
-    """
-    Zbierz URL-e produktów z wszystkich sitemap.
-    Filtrujemy po fragmentach '/us/en/shop/'.
-    """
     product_urls = set()
-
     sitemap_urls = discover_sitemaps()
     for sm_url in sitemap_urls:
-        try:
-            print(f"[DEBUG] pobieram sitemap: {sm_url}")
-            xml = fetch_html(sm_url)
-        except Exception as e:
-            print(f"[!] Błąd pobierania sitemap {sm_url}: {e}")
-            continue
-
-        soup = BeautifulSoup(xml, "xml")
-
-        # klasyczny format: <urlset><url><loc>...</loc></url></urlset>
+        print(f"[DEBUG] pobieram sitemap: {sm_url}")
+        xml = fetch_html(sm_url)
+        if not xml: continue
+        soup = BeautifulSoup(xml, "html.parser")
         for loc in soup.find_all("loc"):
             url = loc.get_text(strip=True)
-            if VALID_ROOT in url:
-                product_urls.add(url)
-
-    urls = sorted(product_urls)
-    print(f"Zebrano {len(urls)} URL-i produktów z sitemap")
-    return urls
-
+            if VALID_ROOT in url: product_urls.add(url)
+    return sorted(product_urls)
 
 def extract_image_urls(soup: BeautifulSoup, base_url: str):
-    """Weź max 2 duże zdjęcia; odfiltruj miniatury po nazwie."""
     urls = []
-    for img in soup.select("img"):
-        src = img.get("src") or img.get("data-src")
-        if not src:
-            continue
-        lower = src.lower()
-        if "thumb" in lower or "icon" in lower or "logo" in lower:
-            continue
-        full = urljoin(base_url, src)
-        urls.append(full)
-    return urls[:2]
+    
+    meta_img = soup.find("meta", property="og:image")
+    if meta_img and meta_img.get("content"):
+        urls.append(urljoin(base_url, meta_img["content"]))
 
+    scripts = soup.find_all('script', type='application/ld+json')
+    for script in scripts:
+        try:
+            if not script.string: continue
+            data = json.loads(script.string)
+            if isinstance(data, dict): data = [data]
+            for item in data:
+                if item.get('@type') == 'Product' and 'image' in item:
+                    img_data = item['image']
+                    if isinstance(img_data, list): 
+                        urls.extend(img_data)
+                    elif isinstance(img_data, str): 
+                        urls.append(img_data)
+        except: continue
+        
+    # 3. Skanuj tagi <img> szukając srcset (dla wysokiej rozdzielczości)
+    for img in soup.select("img"):
+        src = None
+        
+        srcset = img.get("srcset") or img.get("data-srcset")
+        if srcset:
+            try:
+                candidates = srcset.split(",")
+                best_candidate = candidates[-1].strip().split(" ")[0]
+                if best_candidate:
+                    src = best_candidate
+            except:
+                pass
+        
+        if not src:
+            src = img.get("src") or img.get("data-src")
+            
+        if not src: continue
+        
+        src_lower = src.lower()
+        if "base64" in src_lower: continue
+        if any(x in src_lower for x in ["icon", "logo", "svg", "avatar", "thumb", "swatch"]): continue
+        
+        full_url = urljoin(base_url, src)
+        urls.append(full_url)
+
+    seen = set()
+    clean_urls = []
+    
+    for x in urls:
+        if x not in seen:
+            clean_urls.append(x)
+            seen.add(x)
+    
+    return clean_urls[:2]
 
 def guess_text(soup: BeautifulSoup, selectors):
     for css in selectors:
         el = soup.select_one(css)
-        if el and el.get_text(strip=True):
-            return el.get_text(" ", strip=True)
+        if el and el.get_text(strip=True): return el.get_text(" ", strip=True)
     h1 = soup.find("h1")
-    if h1 and h1.get_text(strip=True):
-        return h1.get_text(" ", strip=True)
-    p = soup.find("p")
-    if p and p.get_text(strip=True):
-        return p.get_text(" ", strip=True)
-    return ""
-
+    return h1.get_text(" ", strip=True) if h1 else ""
 
 def guess_price(soup: BeautifulSoup):
+    raw_price = ""
     for css in ["[class*='Price']", "span[aria-label*='Price']"]:
         el = soup.select_one(css)
         if el and el.get_text(strip=True):
-            return el.get_text(strip=True)
-    for el in soup.find_all(string=True):
-        text = el.strip()
-        if "$" in text:
-            return text
+            raw_price = el.get_text(strip=True)
+            break
+    if not raw_price:
+        for el in soup.find_all(string=True):
+            if "$" in el and len(el) < 20:
+                raw_price = el
+                break
+    if raw_price:
+        clean = re.sub(r'[^\d.]', '', raw_price)
+        try:
+            # Mnożenie ceny razy 4
+            price_val = float(clean) * 4
+            return str(int(price_val))
+        except: return ""
     return ""
-
 
 def guess_attributes(soup: BeautifulSoup):
     attrs = {"color": "", "material": ""}
-
     text = soup.get_text(" ", strip=True).lower()
-
-    for color in ["black", "blue", "red", "green", "grey", "gray", "yellow", "orange", "white"]:
-        if color in text and not attrs["color"]:
-            attrs["color"] = color.capitalize()
-
-    for material in ["gore-tex", "nylon", "polyester", "down", "cotton", "merino"]:
-        if material in text and not attrs["material"]:
-            attrs["material"] = material.upper() if "gore-tex" in material else material.capitalize()
-
+    for c in ["black", "blue", "red", "green", "grey", "gray", "yellow", "orange", "white"]:
+        if c in text and not attrs["color"]: attrs["color"] = c.capitalize()
+    for m in ["gore-tex", "nylon", "polyester", "down", "cotton", "merino"]:
+        if m in text and not attrs["material"]: attrs["material"] = m.upper() if "gore-tex" in m else m.capitalize()
     return attrs
 
-
 def classify_product(url: str):
-    """
-    Kategoria główna: Clothing / Footwear / Accessories
-    Podkategoria: Men / Women (albo Other).
-    """
     path = urlparse(url).path.lower()
-
-    # podkategoria = płeć
-    if "/womens/" in path:
+    
+    if "/womens/" in path or "-womens" in path or "/women/" in path:
         subcategory = "Women"
-    else:
+    elif "/mens/" in path or "-mens" in path or "/men/" in path:
         subcategory = "Men"
+    else:
+        subcategory = "Unisex"
 
+    clothing_keywords = [
+        "jacket", "coat", "parka", "vest", "anorak", "shell", "blazer",
+        "pant", "short", "legging", "tights", "bottom", "knickers", "bib",
+        "hoody", "shirt", "tee", "top", "polo", "pullover", "sweater", 
+        "cardigan", "fleece", "dress", "skirt", "bra"
+    ]
+    accessories_keywords = [
+        "backpack", "pack", "bag", "duffle", "tote", "waist",
+        "hat", "cap", "beanie", "toque", "balaclava", "neck-gaiter", "headband",
+        "glove", "mitten", "belt", "suspender", "sock", "harness", "chalk", "bucket"
+    ]
+    footwear_keywords = ["shoe", "boot", "footwear", "aerios", "konseal", "vertex", "kragg", "sylan", "norvan"]
 
-    # kategoria = typ produktu
-    if "shoe" in path or "boot" in path or "footwear" in path:
-        category = "Footwear"
-    elif "hat" in path or "belt" in path or "glove" in path or "accessor" in path:
+    if any(x in path for x in clothing_keywords):
+        category = "Clothing"
+    elif any(x in path for x in accessories_keywords):
         category = "Accessories"
+    elif any(x in path for x in footwear_keywords):
+        category = "Footwear"
     else:
         category = "Clothing"
 
     return category, subcategory
 
+def extract_description(soup: BeautifulSoup):
+    description = ""
 
+<<<<<<< HEAD
 def slugify(text: str) -> str:
     return (
         text.lower() 
@@ -167,147 +193,138 @@ def slugify(text: str) -> str:
         .replace("'", "")
         .replace('"', "")
     )
+=======
+    scripts = soup.find_all('script', type='application/ld+json')
+    for script in scripts:
+        try:
+            if not script.string: continue
+            data = json.loads(script.string)
+            if isinstance(data, dict): data = [data]
+            for item in data:
+                if item.get('@type') == 'Product' and 'description' in item:
+                    description = item['description']
+                    if description:
+                        return BeautifulSoup(description, "html.parser").get_text(" ", strip=True)
+        except: continue
+
+    meta_desc = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "description"})
+    if meta_desc and meta_desc.get("content"):
+        return meta_desc["content"].strip()
+
+
+    possible_selectors = [
+        "div[itemprop='description']",
+        ".product-description",
+        "#product-description",
+        "div[class*='description'] p",
+        "section[class*='Description']"
+    ]
+    
+    for selector in possible_selectors:
+        el = soup.select_one(selector)
+        if el and len(el.get_text(strip=True)) > 20: # Ignoruj bardzo krótkie teksty
+            return el.get_text(" ", strip=True)
+
+    return "Brak opisu"
+>>>>>>> b14135eecf5a2c5f87cb64d0a8fecdd448e6b9c0
 
 
 def parse_product_page(url: str, category: str, subcategory: str):
     html = fetch_html(url)
+    if not html: raise Exception("Pusta odpowiedź HTML")
     soup = BeautifulSoup(html, "html.parser")
-
-    name = guess_text(soup, ["h1[class*='Product']", "h1[data-testid*='product']"])
-    description = guess_text(
-        soup,
-        [
-            "div[class*='Description']",
-            "section[class*='Description']",
-            "div[data-testid*='description']",
-        ],
-    )
-    price_text = guess_price(soup)
-    attributes = guess_attributes(soup)
-    image_urls = extract_image_urls(soup, url)
-
-    product_id = slugify(name) or slugify(urlparse(url).path) or str(int(time.time() * 1000))
-    image_paths = download_images(image_urls, product_id)
+    
+    clean_description = extract_description(soup)
 
     return {
         "category": category,
         "subcategory": subcategory,
-        "name": name,
-        "description": description,
-        "price": price_text,
-        "attributes": attributes,
-        "images": image_paths,
+        "name": guess_text(soup, ["h1[class*='Product']", "h1[data-testid*='product']", "h1"]), # Dodano fallback do samego h1
+        "description": clean_description,
+        "price": guess_price(soup),
+        "attributes": guess_attributes(soup),
+        "images": extract_image_urls(soup, url),
         "source_url": url,
     }
 
-
-def download_images(image_urls, product_id: str):
-    images_dir = os.path.join("scraper_output", "images")
-    os.makedirs(images_dir, exist_ok=True)
-
-    saved = []
-
-    for i, img_url in enumerate(image_urls):
-        try:
-            resp = SESSION.get(img_url, timeout=20)
-            resp.raise_for_status()
-        except Exception as e:
-            print(f"[!] Błąd pobierania obrazka {img_url}: {e}")
-            continue
-
-        ext = ".jpg"
-        lower = img_url.lower()
-        if ".png" in lower:
-            ext = ".png"
-        elif ".jpeg" in lower:
-            ext = ".jpeg"
-
-        filename = f"{product_id}-{i+1}{ext}"
-        rel_path = os.path.join("images", filename)
-        abs_path = os.path.join("scraper_output", rel_path)
-
-        with open(abs_path, "wb") as f:
-            f.write(resp.content)
-
-        saved.append(rel_path)
-        time.sleep(0.05)
-
-    return saved
-
+def parse_product_page(url: str, category: str, subcategory: str):
+    html = fetch_html(url)
+    if not html: raise Exception("Pusta odpowiedź HTML")
+    soup = BeautifulSoup(html, "html.parser")
+    
+    return {
+        "category": category,
+        "subcategory": subcategory,
+        "name": guess_text(soup, ["h1[class*='Product']", "h1[data-testid*='product']"]),
+        "description": guess_text(soup, ["div[class*='Description']", "section[class*='Description']"]),
+        "price": guess_price(soup),
+        "attributes": guess_attributes(soup),
+        "images": extract_image_urls(soup, url),
+        "source_url": url,
+    }
 
 def main():
-    os.makedirs("scraper_output", exist_ok=True)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    project_root = os.path.dirname(script_dir)
+    
+    output_dir = os.path.join(project_root, "scraper_output")
+    
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"[INFO] Wyniki zostaną zapisane w: {output_dir}")
 
     product_urls = collect_product_urls()
     all_products = []
 
     for url in product_urls:
         category, subcategory = classify_product(url)
-        if subcategory not in ("Men", "Women"):
+        
+        if subcategory == "Unisex" and category != "Accessories":
             continue
 
         print(f"Scrapuję: {category} / {subcategory} -> {url}")
         try:
             product = parse_product_page(url, category, subcategory)
-            if len(product["images"]) < 2:
-                print(f"  [!] Pomijam {product['name']} – mniej niż 2 duże zdjęcia")
+            if len(product["images"]) < 1:
+                print(f"  [!] Pomijam {product['name']} – brak zdjęć")
                 continue
             all_products.append(product)
+            print(f"  OK: {product['name']} - cena: {product['price']} - zdjęcia: {len(product['images'])}")
         except Exception as e:
             print(f"  [!] Błąd przy {url}: {e}")
 
-    # JSON
-    json_path = os.path.join("scraper_output", "data.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(all_products, f, ensure_ascii=False, indent=2)
-    print(f"Zapisano {len(all_products)} produktów do {json_path}")
-
-    # CSV
-    csv_path = os.path.join("scraper_output", "data.csv")
-    fieldnames = [
-        "name",
-        "description",
-        "price",
-        "categories",   # category > subcategory
-        "quantity",
-        "image1",
-        "image2",
-        "source_url",
-        "color",
-        "material",
-    ]
+    csv_path = os.path.join(output_dir, "data_links.csv")
+    fieldnames = ["name", "description", "price", "categories", "quantity", "images", "source_url", "color", "material"]
 
     with open(csv_path, "w", encoding="utf-8", newline="") as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames, delimiter=";")
         writer.writeheader()
 
         for p in all_products:
-            images = p.get("images", [])
-            img1 = images[0] if len(images) > 0 else ""
-            img2 = images[1] if len(images) > 1 else ""
+            cat = p['category']
+            sub = p['subcategory']
+            
+            if cat == "Accessories" and sub == "Unisex":
+                categories_str = "Accessories/Men,Accessories/Women"
+            else:
+                categories_str = f"{cat}/{sub}"
 
-            attrs = p.get("attributes", {}) or {}
-            color = attrs.get("color", "")
-            material = attrs.get("material", "")
-
-            quantity = 5  # domyślna ilość – możesz potem nadpisać w CSV
+            images_str = ",".join(p.get("images", []))
 
             row = {
                 "name": p["name"],
                 "description": p["description"],
                 "price": p["price"],
-                "categories": f"{p['category']}>{p['subcategory']}",
-                "quantity": quantity,
-                "image1": img1,
-                "image2": img2,
+                "categories": categories_str,
+                "quantity": random.randint(0, 10),
+                "images": images_str,
                 "source_url": p["source_url"],
-                "color": color,
-                "material": material,
+                "color": p["attributes"].get("color", ""),
+                "material": p["attributes"].get("material", ""),
             }
             writer.writerow(row)
 
-    print(f"Zapisano {len(all_products)} produktów do {csv_path}")
-
+    print(f"Zakończono! Zapisano {len(all_products)} produktów do {csv_path}")
 
 if __name__ == "__main__":
     main()
