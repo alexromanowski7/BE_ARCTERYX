@@ -9,8 +9,6 @@ Dane produktów i kategorii są scrapowane ze sklepu źródłowego.
 - Docker + docker-compose
 - Python (scraper, testy Selenium)
 
-#TODO
-
 ## Struktura repozytorium
 
 - `shop/` – kod źródłowy sklepu (PrestaShop)
@@ -24,13 +22,9 @@ Dane produktów i kategorii są scrapowane ze sklepu źródłowego.
 Instrukcja krok po kroku
 Pobranie repozytorium:
 
-Bash
-
 git clone <adres-twojego-repozytorium>
 cd <nazwa-katalogu-projektu>
 Uruchomienie kontenerów: W głównym katalogu projektu uruchom komendę:
-
-Bash
 
 docker-compose up -d
 
@@ -47,8 +41,6 @@ E-mail: admin@sklep.pl
 Hasło: password123
 
 Zatrzymanie środowiska: Aby zatrzymać i usunąć kontenery:
-
-Bash
 
 docker-compose down
 
