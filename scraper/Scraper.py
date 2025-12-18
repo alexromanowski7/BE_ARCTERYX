@@ -160,7 +160,7 @@ def classify_product(url: str):
 
 def slugify(text: str) -> str:
     return (
-        text.lower()
+        text.lower() 
         .strip()
         .replace(" ", "-")
         .replace("/", "-")

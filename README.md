@@ -6,10 +6,10 @@ Dane produktów i kategorii są scrapowane ze sklepu źródłowego.
 ## Technologie
 
 - PrestaShop 1.7.8.x
-- PHP, MySQL/MariaDB
-- Docker + docker-compose / Ubuntu VM
+- Docker + docker-compose
 - Python (scraper, testy Selenium)
-- Selenium WebDriver
+
+#TODO
 
 ## Struktura repozytorium
 
@@ -21,7 +21,36 @@ Dane produktów i kategorii są scrapowane ze sklepu źródłowego.
 
 ## Uruchomienie (Docker)
 
-#TODO
+Instrukcja krok po kroku
+Pobranie repozytorium:
+
+Bash
+
+git clone <adres-twojego-repozytorium>
+cd <nazwa-katalogu-projektu>
+Uruchomienie kontenerów: W głównym katalogu projektu uruchom komendę:
+
+Bash
+
+docker-compose up -d
+
+Dostęp do sklepu: Po poprawnym uruchomieniu kontenerów, sklep będzie dostępny pod adresem:
+
+Sklep: https://localhost
+
+Panel Administratora: https://localhost/admin697jmd6ap
+
+Dane logowania:
+
+E-mail: admin@sklep.pl
+
+Hasło: password123
+
+Zatrzymanie środowiska: Aby zatrzymać i usunąć kontenery:
+
+Bash
+
+docker-compose down
 
 ## Zespół
 
